@@ -2,134 +2,77 @@ class FraudBot {
   constructor(name, linkedBike) {
     this.name = name;
     this.linkedBike = linkedBike;
-    this.diagDir = null;
+    this.matrix = [];
+    this.direction = null; 
   }
 
-  createAdaptiveMatrix(arena) {
+  createMatrix(arena) {
     const size = arena.gridSize;
-    const playerX = this.linkedBike.x;
-    const playerY = this.linkedBike.y;
+    const { x, y } = this.linkedBike;
 
-    if (!this.diagDir) {
-      if (playerX < size / 2 && playerY < size / 2) this.diagDir = "DOWN_RIGHT";
-      else if (playerX >= size / 2 && playerY >= size / 2) this.diagDir = "UP_LEFT";
+    if (!this.direction) {
+      this.direction = (x < size / 2 && y < size / 2)
+        ? "DOWN_RIGHT"   
+        : "UP_LEFT";     
     }
 
-    const matrix = [];
+    this.matrix = [];
 
-    for (let y = 0; y < size; y++) {
-      matrix[y] = [];
-      for (let x = 0; x < size; x++) {
+    for (let j = 0; j < size; j++) {
+      this.matrix[j] = [];
+      for (let i = 0; i < size; i++) {
         let isDiagonal = false;
-        let isNearDiagonal = false;
 
-        switch (this.diagDir) {
-          case "DOWN_RIGHT":
-            isDiagonal = x === y;
-            isNearDiagonal = x === y - 1 || x === y + 1;
-            break;
-          case "UP_LEFT":
-            isDiagonal = x + y === size - 1;
-            isNearDiagonal = x + y === size - 2 || x + y === size;
-            break;
+        if (this.direction === "DOWN_RIGHT") {
+          isDiagonal = (i === j);
+        } else {
+          isDiagonal = (i + j === size - 1);
         }
 
-        matrix[y][x] = isDiagonal ? 80 : isNearDiagonal ? 30 : 10;
+        if (isDiagonal) {
+          this.matrix[j][i] = 100;
+        } else if (
+          isDiagonal ||
+          (this.direction === "DOWN_RIGHT" && (i === j - 1 || i === j + 1)) ||
+          (this.direction === "UP_LEFT" && (i + j === size - 2 || i + j === size))
+        ) {
+          this.matrix[j][i] = 30;
+        } else {
+          this.matrix[j][i] = 0;
+        }
       }
     }
-
-    return matrix;
-  }
-
-  createDefensiveMatrix(arena, enemy) {
-    const size = arena.gridSize;
-    const player = this.linkedBike;
-    const matrix = [];
-
-    for (let y = 0; y < size; y++) {
-      matrix[y] = [];
-      for (let x = 0; x < size; x++) {
-        const distanceToEnemy = Math.abs(x - enemy.x) + Math.abs(y - enemy.y);
-        const distanceToSelf = Math.abs(x - player.x) + Math.abs(y - player.y);
-        matrix[y][x] = Math.max(0, size - distanceToEnemy - distanceToSelf / 2);
-      }
-    }
-    return matrix;
-  }
-
-  cloneArena(arena) {
-    return {
-      gridSize: arena.gridSize,
-      grid: arena.grid.map(cell => ({ ...cell })),
-      getLegalMoves: arena.getLegalMoves.bind(arena),
-      getAvailableTilesNumber: arena.getAvailableTilesNumber.bind(arena)
-    };
-  }
-
-  clonePlayer(player) {
-    return { x: player.x, y: player.y };
-  }
-
-  simulateMove(cloneArena, clonePlayer, newX, newY) {
-    const size = cloneArena.gridSize;
-    cloneArena.grid[clonePlayer.y * size + clonePlayer.x].content = "Wall";
-    clonePlayer.x = newX;
-    clonePlayer.y = newY;
-    cloneArena.grid[newY * size + newX].content = "Player";
-  }
-
-  predictEnemyMove(arena, enemy) {
-    const clonedArena = this.cloneArena(arena);
-    const clonedEnemy = this.clonePlayer(enemy);
-    const possibleMoves = arena
-      .getLegalMoves(clonedEnemy.x, clonedEnemy.y, true)
-      .filter(move => !move.collision);
-
-    if (!possibleMoves.length) return null;
-
-    let bestMove = possibleMoves[0];
-    let bestScore = -Infinity;
-
-    for (const move of possibleMoves) {
-      this.simulateMove(clonedArena, clonedEnemy, move.xMove, move.yMove);
-      const spaceScore = clonedArena.getAvailableTilesNumber(move.xMove, move.yMove);
-      if (spaceScore > bestScore) {
-        bestScore = spaceScore;
-        bestMove = move;
-      }
-    }
-
-    return bestMove;
+    return this.matrix;
   }
 
   getMove(arena, game) {
-    const playerX = this.linkedBike.x;
-    const playerY = this.linkedBike.y;
-    const enemyBike = game.getOtherPlayer().linkedBike;
+    const x = this.linkedBike.x;
+    const y = this.linkedBike.y;
 
-    const possibleMoves = arena.getLegalMoves(playerX, playerY, true).filter(move => !move.collision);
-    if (!possibleMoves.length) return [playerX, playerY];
+    const enemy = game.getOtherPlayer().linkedBike;
 
-    const adaptiveMatrix = this.createAdaptiveMatrix(arena);
-    const defensiveMatrix = this.createDefensiveMatrix(arena, enemyBike);
-    const predictedEnemyMove = this.predictEnemyMove(arena, enemyBike);
+    const moves = arena.getLegalMoves(x, y, true);
+    const safeMoves = moves.filter(m => !m.collision);
 
-    let bestMove = possibleMoves[0];
+    if (safeMoves.length === 0) {
+      return [x, y];
+    }
+
+    const matrix = this.createMatrix(arena);
+
     let bestScore = -Infinity;
+    let bestMove = null;
 
-    const isRedPlayer = playerX > arena.gridSize / 2 && playerY > arena.gridSize / 2;
+    for (const move of safeMoves) {
+      const spaceScore = arena.getAvailableTilesNumber(
+        move.xMove,
+        move.yMove
+      );
 
-    for (const move of possibleMoves) {
-      const spaceScore = arena.getAvailableTilesNumber(move.xMove, move.yMove);
-      const diagScore = adaptiveMatrix[move.yMove]?.[move.xMove] || 0;
-      const defScore = defensiveMatrix[move.yMove]?.[move.xMove] || 0;
+      const matrixScore =
+        matrix[move.yMove]?.[move.xMove] || 0;
 
-      let penalty = 0;
-      if (predictedEnemyMove && move.xMove === predictedEnemyMove.x && move.yMove === predictedEnemyMove.y) {
-        penalty = 50;
-      }
-
-      const totalScore = spaceScore * 2 + defScore + diagScore * (isRedPlayer ? 2 : 1) - penalty;
+      const totalScore = spaceScore + matrixScore;
 
       if (totalScore > bestScore) {
         bestScore = totalScore;
