@@ -2,90 +2,138 @@ class FraudBot {
   constructor(name, linkedBike) {
     this.name = name;
     this.linkedBike = linkedBike;
-    this.diagDir = null; 
+    this.diagDir = null;
   }
 
-  createAdaptiveDiagonalMatrix(arena) {
+  createAdaptiveMatrix(arena) {
     const size = arena.gridSize;
-    const { x, y } = this.linkedBike;
+    const playerX = this.linkedBike.x;
+    const playerY = this.linkedBike.y;
 
     if (!this.diagDir) {
-      this.diagDir =
-        x <= size / 2 && y <= size / 2 ? "DOWN_RIGHT" : "UP_LEFT";
+      if (playerX < size / 2 && playerY < size / 2) this.diagDir = "DOWN_RIGHT";
+      else if (playerX >= size / 2 && playerY >= size / 2) this.diagDir = "UP_LEFT";
     }
 
-    const mat = [];
+    const matrix = [];
 
-    for (let j = 0; j < size; j++) {
-      mat[j] = [];
-      for (let i = 0; i < size; i++) {
-        let diag = false;
-        let nearDiag = false;
+    for (let y = 0; y < size; y++) {
+      matrix[y] = [];
+      for (let x = 0; x < size; x++) {
+        let isDiagonal = false;
+        let isNearDiagonal = false;
 
-        if (this.diagDir === "DOWN_RIGHT") {
-          diag = i === j;
-          nearDiag = i === j - 1 || i === j + 1;
-        } else {
-          diag = i + j === size - 1;
-          nearDiag = i + j === size - 2 || i + j === size;
+        switch (this.diagDir) {
+          case "DOWN_RIGHT":
+            isDiagonal = x === y;
+            isNearDiagonal = x === y - 1 || x === y + 1;
+            break;
+          case "UP_LEFT":
+            isDiagonal = x + y === size - 1;
+            isNearDiagonal = x + y === size - 2 || x + y === size;
+            break;
         }
 
-        const tile = arena.grid[i * size + j];
-        const occupied = tile.content === "Wall" || tile.content === "Player";
-
-        if (diag) mat[j][i] = occupied ? 20 : 80;
-        else if (nearDiag) mat[j][i] = occupied ? 10 : 30;
-        else mat[j][i] = 0;
+        matrix[y][x] = isDiagonal ? 80 : isNearDiagonal ? 30 : 10;
       }
     }
 
-    return mat;
+    return matrix;
   }
 
   createDefensiveMatrix(arena, enemy) {
     const size = arena.gridSize;
-    const self = this.linkedBike;
-    const mat = [];
+    const player = this.linkedBike;
+    const matrix = [];
 
     for (let y = 0; y < size; y++) {
-      mat[y] = [];
+      matrix[y] = [];
       for (let x = 0; x < size; x++) {
-        const dEnemy = Math.abs(x - enemy.x) + Math.abs(y - enemy.y);
-        const dSelf = Math.abs(x - self.x) + Math.abs(y - self.y);
+        const distanceToEnemy = Math.abs(x - enemy.x) + Math.abs(y - enemy.y);
+        const distanceToSelf = Math.abs(x - player.x) + Math.abs(y - player.y);
+        matrix[y][x] = Math.max(0, size - distanceToEnemy - distanceToSelf / 2);
+      }
+    }
+    return matrix;
+  }
 
-        mat[y][x] = Math.max(0, size - dEnemy - dSelf / 2);
+  cloneArena(arena) {
+    return {
+      gridSize: arena.gridSize,
+      grid: arena.grid.map(cell => ({ ...cell })),
+      getLegalMoves: arena.getLegalMoves.bind(arena),
+      getAvailableTilesNumber: arena.getAvailableTilesNumber.bind(arena)
+    };
+  }
+
+  clonePlayer(player) {
+    return { x: player.x, y: player.y };
+  }
+
+  simulateMove(cloneArena, clonePlayer, newX, newY) {
+    const size = cloneArena.gridSize;
+    cloneArena.grid[clonePlayer.y * size + clonePlayer.x].content = "Wall";
+    clonePlayer.x = newX;
+    clonePlayer.y = newY;
+    cloneArena.grid[newY * size + newX].content = "Player";
+  }
+
+  predictEnemyMove(arena, enemy) {
+    const clonedArena = this.cloneArena(arena);
+    const clonedEnemy = this.clonePlayer(enemy);
+    const possibleMoves = arena
+      .getLegalMoves(clonedEnemy.x, clonedEnemy.y, true)
+      .filter(move => !move.collision);
+
+    if (!possibleMoves.length) return null;
+
+    let bestMove = possibleMoves[0];
+    let bestScore = -Infinity;
+
+    for (const move of possibleMoves) {
+      this.simulateMove(clonedArena, clonedEnemy, move.xMove, move.yMove);
+      const spaceScore = clonedArena.getAvailableTilesNumber(move.xMove, move.yMove);
+      if (spaceScore > bestScore) {
+        bestScore = spaceScore;
+        bestMove = move;
       }
     }
 
-    return mat;
+    return bestMove;
   }
 
   getMove(arena, game) {
-    const x = this.linkedBike.x;
-    const y = this.linkedBike.y;
-    const enemy = game.getOtherPlayer().linkedBike;
+    const playerX = this.linkedBike.x;
+    const playerY = this.linkedBike.y;
+    const enemyBike = game.getOtherPlayer().linkedBike;
 
-    const moves = arena.getLegalMoves(x, y, true);
-    const safeMoves = moves.filter(m => !m.collision);
+    const possibleMoves = arena.getLegalMoves(playerX, playerY, true).filter(move => !move.collision);
+    if (!possibleMoves.length) return [playerX, playerY];
 
-    if (safeMoves.length === 0) return [x, y];
+    const adaptiveMatrix = this.createAdaptiveMatrix(arena);
+    const defensiveMatrix = this.createDefensiveMatrix(arena, enemyBike);
+    const predictedEnemyMove = this.predictEnemyMove(arena, enemyBike);
 
-    const diagMat = this.createAdaptiveDiagonalMatrix(arena);
-    const defMat = this.createDefensiveMatrix(arena, enemy);
-
+    let bestMove = possibleMoves[0];
     let bestScore = -Infinity;
-    let bestMove = null;
 
-    for (const m of safeMoves) {
-      const spaceScore = arena.getAvailableTilesNumber(m.xMove, m.yMove);
-      const diagScore = diagMat[m.yMove]?.[m.xMove] || 0;
-      const defScore = defMat[m.yMove]?.[m.xMove] || 0;
+    const isRedPlayer = playerX > arena.gridSize / 2 && playerY > arena.gridSize / 2;
 
-      const totalScore = spaceScore + diagScore + defScore;
+    for (const move of possibleMoves) {
+      const spaceScore = arena.getAvailableTilesNumber(move.xMove, move.yMove);
+      const diagScore = adaptiveMatrix[move.yMove]?.[move.xMove] || 0;
+      const defScore = defensiveMatrix[move.yMove]?.[move.xMove] || 0;
+
+      let penalty = 0;
+      if (predictedEnemyMove && move.xMove === predictedEnemyMove.x && move.yMove === predictedEnemyMove.y) {
+        penalty = 50;
+      }
+
+      const totalScore = spaceScore * 2 + defScore + diagScore * (isRedPlayer ? 2 : 1) - penalty;
 
       if (totalScore > bestScore) {
         bestScore = totalScore;
-        bestMove = m;
+        bestMove = move;
       }
     }
 
